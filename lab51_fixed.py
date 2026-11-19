@@ -1,10 +1,19 @@
 import pandas as pd
 import numpy as np
-from collections import Counter, defaultdict
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE, MDS
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import silhouette_score
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage, fcluster
+from sklearn.metrics import (
+    adjusted_rand_score,
+    normalized_mutual_info_score,
+    homogeneity_score,
+    completeness_score,
+    v_measure_score,
+    silhouette_samples,
+    silhouette_score
+)
 
 
 df = pd.read_csv(
@@ -380,6 +389,7 @@ print("\n" + "=" * 75)
 print("РАССТОЯНИЕ ГАУЭРА")
 print("=" * 75)
 
+
 def gower_distance_matrix(data, numeric_cols, categorical_cols):
     """
     Расчёт матрицы расстояний Гауэра для смешанных данных.
@@ -499,6 +509,204 @@ gower_model = AgglomerativeClustering(
 gower_labels = gower_model.fit_predict(gower_matrix)
 
 
+# ------------------------------------------------------------
+# ДОПОЛНИТЕЛЬНЫЙ ЭКСПЕРИМЕНТ: СРАВНЕНИЕ ПРИ 5 КЛАСТЕРАХ
+# ------------------------------------------------------------
+print("\n" + "=" * 75)
+print("ДОПОЛНИТЕЛЬНОЕ СРАВНЕНИЕ ПРИ 5 КЛАСТЕРАХ")
+print("=" * 75)
+
+# target используется только для внешней оценки.
+# При построении кластеров он не используется.
+
+target_for_metrics = target.astype(int)
+
+# ------------------------------------------------------------
+# 1. Проверка возможности получить 5 кластеров CLOPE
+# ------------------------------------------------------------
+
+clope_5_labels = None
+clope_5_repulsion = None
+
+for r in np.arange(0.5, 3.01, 0.05):
+    labels_test, clusters_test = clope(
+        transactions,
+        repulsion=round(float(r), 2),
+        max_iter=20
+    )
+
+    if len(clusters_test) == 5:
+        clope_5_labels = labels_test
+        clope_5_repulsion = round(float(r), 2)
+        break
+
+if clope_5_labels is None:
+    print("\nCLOPE не сформировал ровно 5 кластеров.")
+    print("Основной эксперимент CLOPE оставляем с 35 кластерами.")
+else:
+    print(f"\nCLOPE: repulsion = {clope_5_repulsion}")
+    print(f"Количество кластеров: {len(np.unique(clope_5_labels))}")
+
+
+# ------------------------------------------------------------
+# 2. Кластеризация Гауэра с k = 5
+# ------------------------------------------------------------
+
+gower_5_model = AgglomerativeClustering(
+    n_clusters=5,
+    metric="precomputed",
+    linkage="average"
+)
+
+gower_5_labels = gower_5_model.fit_predict(gower_matrix)
+
+print("\nGOWER:")
+print(f"Количество кластеров: {len(np.unique(gower_5_labels))}")
+
+
+# ------------------------------------------------------------
+# 3. Расчёт внешних метрик
+# ------------------------------------------------------------
+
+def calculate_external_metrics(true_labels, cluster_labels):
+    return {
+        "ARI": adjusted_rand_score(true_labels, cluster_labels),
+        "NMI": normalized_mutual_info_score(true_labels, cluster_labels),
+        "Homogeneity": homogeneity_score(true_labels, cluster_labels),
+        "Completeness": completeness_score(true_labels, cluster_labels),
+        "V-measure": v_measure_score(true_labels, cluster_labels)
+    }
+
+
+gower_metrics = calculate_external_metrics(
+    target_for_metrics,
+    gower_5_labels
+)
+
+print("\nВНЕШНИЕ МЕТРИКИ GOWER (5 КЛАСТЕРОВ):")
+print(
+    pd.DataFrame(gower_metrics, index=["Gower"])
+    .round(4)
+    .to_string()
+)
+
+if clope_5_labels is not None:
+    clope_metrics = calculate_external_metrics(
+        target_for_metrics,
+        clope_5_labels
+    )
+
+    metrics_comparison = pd.DataFrame({
+        "CLOPE (5 кластеров)": clope_metrics,
+        "Gower (5 кластеров)": gower_metrics
+    })
+
+    print("\nСРАВНЕНИЕ ВНЕШНИХ МЕТРИК:")
+    print(metrics_comparison.round(4).to_string())
+else:
+    print("\nСравнение внешних метрик CLOPE и Gower при 5 кластерах невозможно.")
+
+
+# ------------------------------------------------------------
+# 4. Расчёт коэффициента силуэта Gower
+# ------------------------------------------------------------
+
+gower_5_silhouette = silhouette_score(
+    gower_matrix,
+    gower_5_labels,
+    metric="precomputed"
+)
+
+print("\nВНУТРЕННЯЯ МЕТРИКА (SILHOUETTE):")
+print(f"Gower, 5 кластеров: {gower_5_silhouette:.4f}")
+
+
+# ------------------------------------------------------------
+# 5. Построение силуэтной диаграммы
+# ------------------------------------------------------------
+
+def plot_silhouette(distance_matrix, labels, title):
+    sample_values = silhouette_samples(
+        distance_matrix,
+        labels,
+        metric="precomputed"
+    )
+
+    average_value = sample_values.mean()
+    unique_labels = np.unique(labels)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    y_lower = 10
+
+    for cluster_id in unique_labels:
+        cluster_values = sample_values[labels == cluster_id]
+        cluster_values.sort()
+
+        size = len(cluster_values)
+        y_upper = y_lower + size
+
+        color = plt.cm.nipy_spectral(
+            float(cluster_id) / max(len(unique_labels), 1)
+        )
+
+        ax.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            cluster_values,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.7
+        )
+
+        ax.text(
+            -0.05,
+            y_lower + size / 2,
+            str(cluster_id + 1)
+        )
+
+        y_lower = y_upper + 10
+
+    ax.axvline(
+        x=average_value,
+        color="red",
+        linestyle="--",
+        label=f"Средний силуэт = {average_value:.3f}"
+    )
+
+    ax.set_title(title)
+    ax.set_xlabel("Коэффициент силуэта")
+    ax.set_ylabel("Кластеры")
+    ax.legend()
+    ax.set_yticks([])
+    ax.set_xlim(-0.2, 1.0)
+
+    plt.tight_layout()
+    plt.show()
+
+
+plot_silhouette(
+    gower_matrix,
+    gower_5_labels,
+    "Силуэтная диаграмма Gower (5 кластеров)"
+)
+
+
+# ------------------------------------------------------------
+# 6. Таблица распределения target по кластерам
+# ------------------------------------------------------------
+
+print("\nРаспределение target по 5 кластерам Gower:")
+print(
+    pd.crosstab(
+        gower_5_labels + 1,
+        target_for_metrics
+    ).to_string()
+)
+
+print("\nДополнительное сравнение завершено.")
+
+
 print("\n" + "=" * 75)
 print("РЕЗУЛЬТАТЫ КЛАСТЕРИЗАЦИИ ПО ГАУЭРУ")
 print("=" * 75)
@@ -598,3 +806,94 @@ print(
     "\nВажно: target не использовался при построении кластеров."
     "\nОн выведен только на последнем этапе для интерпретации."
 )
+
+
+
+# ============================================================
+# ВИЗУАЛИЗАЦИЯ КЛАСТЕРОВ (PCA / MDS / t-SNE)
+# ============================================================
+print("\n" + "=" * 75)
+print("ВИЗУАЛИЗАЦИЯ КЛАСТЕРОВ")
+print("=" * 75)
+
+# ---------- 1. Подготовка one-hot матрицы категориальных признаков ----------
+# Именно в этом пространстве по смыслу работал CLOPE
+encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+X_cat_onehot = encoder.fit_transform(clope_df[categorical_features])
+print(f"One-hot матрица категориальных признаков: {X_cat_onehot.shape}")
+
+# ---------- 2. PCA по one-hot (для CLOPE) ----------
+pca_clope = PCA(n_components=2, random_state=42)
+X_pca_clope = pca_clope.fit_transform(X_cat_onehot)
+print(f"PCA (one-hot) объяснённая дисперсия: "
+      f"{pca_clope.explained_variance_ratio_.sum():.3f}")
+
+# ---------- 3. MDS по матрице Гауэра (для Gower) ----------
+# Кластеризация Гауэра шла в пространстве этой матрицы -> MDS честнее PCA
+mds = MDS(
+    n_components=2,
+    dissimilarity="precomputed",
+    random_state=42,
+    normalized_stress="auto",
+    n_init=4,
+    max_iter=300
+)
+X_mds_gower = mds.fit_transform(gower_matrix)
+print(f"MDS по матрице Гауэра: stress = {mds.stress_:.4f}")
+
+# ============================================================
+# РИСУНОК 1: CLOPE — PCA по one-hot
+# ============================================================
+fig, ax = plt.subplots(figsize=(10, 7))
+scatter = ax.scatter(
+    X_pca_clope[:, 0], X_pca_clope[:, 1],
+    c=clope_labels, cmap="tab20", s=40, alpha=0.8
+)
+ax.set_xlabel(f"PC1 ({pca_clope.explained_variance_ratio_[0]*100:.1f}%)")
+ax.set_ylabel(f"PC2 ({pca_clope.explained_variance_ratio_[1]*100:.1f}%)")
+ax.set_title(
+    f"CLOPE: PCA по one-hot категориальным признакам\n"
+    f"{len(clope_clusters)} кластеров, silhouette = {selected_clope_silhouette:.4f}"
+)
+plt.colorbar(scatter, ax=ax, label="Кластер CLOPE", shrink=0.8)
+plt.tight_layout()
+plt.savefig("fig_clope_pca.png", dpi=150, bbox_inches="tight")
+plt.show()
+
+# ============================================================
+# РИСУНОК 2: Gower — MDS по матрице Гауэра, окраска по кластерам
+# ============================================================
+fig, ax = plt.subplots(figsize=(10, 7))
+scatter = ax.scatter(
+    X_mds_gower[:, 0], X_mds_gower[:, 1],
+    c=gower_labels, cmap="viridis", s=40, alpha=0.8
+)
+ax.set_xlabel("MDS-1")
+ax.set_ylabel("MDS-2")
+ax.set_title(
+    f"Gower: MDS по матрице расстояний Гауэра\n"
+    f"k = {best_k}, silhouette = {best_silhouette:.4f}"
+)
+plt.colorbar(scatter, ax=ax, label="Кластер Gower", shrink=0.8)
+plt.tight_layout()
+plt.savefig("fig_gower_mds.png", dpi=150, bbox_inches="tight")
+plt.show()
+
+# ============================================================
+# РИСУНОК 3: Gower — та же MDS-проекция, окраска по target
+# ============================================================
+fig, ax = plt.subplots(figsize=(10, 7))
+scatter = ax.scatter(
+    X_mds_gower[:, 0], X_mds_gower[:, 1],
+    c=target, cmap="Set1", s=40, alpha=0.8
+)
+ax.set_xlabel("MDS-1")
+ax.set_ylabel("MDS-2")
+ax.set_title(
+    "Gower: MDS по расстоянию Гауэра, окраска по target\n"
+    "(target не участвовал в кластеризации)"
+)
+plt.colorbar(scatter, ax=ax, label="target", shrink=0.8)
+plt.tight_layout()
+plt.savefig("fig_gower_mds_target.png", dpi=150, bbox_inches="tight")
+plt.show()
